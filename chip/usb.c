@@ -211,7 +211,7 @@ static struct {
 #define RS_H 32u
 _Static_assert(RS_H >= UAC_FIR_N && (RS_H & (RS_H - 1u)) == 0, "the history holds a window");
 static struct {
-    int16_t samples[UA_CHANNELS][2u * RS_H];
+    float samples[UA_CHANNELS][2u * RS_H];
     uint32_t w;                  /* input frames written */
     uint32_t ph;                 /* the next output's phase, 0..159 (its newest input frame: the next written) */
 #if FELUCCA_UAC_TONE
@@ -1315,15 +1315,10 @@ static inline int32_t uac_s16(int32_t v)
 static inline int32_t uac_in16(int32_t v) { return uac_s16((v + 128) >> 8); }
 
 #if FELUCCA_UAC_48K
-/* one tap into a sum, out of line and in registers only (docs/CPU.md: 64-bit multiplies inlined among loads, the
- * history's 16-bit ones above all, are what fails on the FM-1; here nothing is loaded and the product is used at once) */
-static __attribute__((noinline)) int64_t uac_mac48(int64_t a, int32_t t, int32_t x)
-{
-    return a + (int64_t)t * x;
-}
 /* 44.1 -> 48 kHz (x 160 / 147), one block: each input frame enters the history, then the 1 or 2 output
  * frames whose newest input it is: phase ph, the window of UAC_FIR_N frames ending at it, the taps of
- * phase ph (or of 159 - ph backwards: the prototype is symmetric), Q30 into 64-bit sums. */
+ * phase ph (or of 159 - ph backwards: the prototype is symmetric), single-precision multiply/adds.
+ * No 64-bit multiplies (see docs/CPU.md). */
 static __attribute__((noinline)) void uac_tap48(const int32_t *out, uint32_t n)
 {
     uint32_t w = ua_w, i, j, k = 0, h = rs.w, ph = rs.ph;
@@ -1334,23 +1329,23 @@ static __attribute__((noinline)) void uac_tap48(const int32_t *out, uint32_t n)
     for (i = 0; i < n; i++) {
         uint32_t s = h & (RS_H - 1u);
         for (uint32_t c = 0; c < UA_CHANNELS; c++) {
-            int16_t sample = (int16_t)uac_in16(out[UA_CHANNELS * i + c]);
+            float sample = (float)uac_in16(out[UA_CHANNELS * i + c]);
             rs.samples[c][s] = rs.samples[c][s + RS_H] = sample;
         }
         h++;
         s = (h - UAC_FIR_N) & (RS_H - 1u);
         do {
             for (uint32_t channel = 0; channel < UA_CHANNELS; channel++) {
-                const int16_t *x = &rs.samples[channel][s];
-                int64_t sum = 0;
+                const float *x = &rs.samples[channel][s];
+                float sum = 0;
                 if (ph < UAC_FIR_L / 2u) {
-                    const int32_t *c = UAC_FIR[ph];
-                    for (j = UAC_FIR_N; j; j--, x++) sum = uac_mac48(sum, *c++, *x);
+                    const float *c = UAC_FIR[ph];
+                    for (j = UAC_FIR_N; j; j--, x++) sum += *c++ * *x;
                 } else {
-                    const int32_t *c = &UAC_FIR[UAC_FIR_L - 1u - ph][UAC_FIR_N - 1u];
-                    for (j = UAC_FIR_N; j; j--, x++) sum = uac_mac48(sum, *c--, *x);
+                    const float *c = &UAC_FIR[UAC_FIR_L - 1u - ph][UAC_FIR_N - 1u];
+                    for (j = UAC_FIR_N; j; j--, x++) sum += *c-- * *x;
                 }
-                int32_t sample = uac_s16((int32_t)((sum + (1 << (UAC_FIR_Q - 1))) >> UAC_FIR_Q));
+                int32_t sample = uac_s16((int32_t)(sum + (sum < 0 ? -0.5f : 0.5f)));
 #if FELUCCA_UAC_TONE
                 uint32_t t = rs.tone, q = t < 50u ? t : 100u - t;
                 if (channel & 1u) q = 50u - q;
