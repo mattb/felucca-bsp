@@ -57,6 +57,8 @@ They verify names, interleaving, underrun hold, channel isolation, 160/147 frame
 counts, unity gain, ring wrap, block-boundary invariance and a 4.5 kHz tone's
 resampling image below -60 dB. They also verify coefficient regeneration and compare over 1.6 million production
 resampler outputs with the pre-float integer coefficients and convolution, allowing
-at most one PCM16 count of rounding difference.
+at most one PCM16 count of rounding difference. This comparison requires full
+branch history containing the pre-float commit `ebd08f4`; it reports an explicit
+error if that baseline is absent.
 Hardware captures remain necessary to establish USB enumeration, channel names,
 continuous transfer and CPU headroom on a particular host and firmware.

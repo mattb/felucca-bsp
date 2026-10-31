@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Production float resampler vs the separately retained integer coefficient
- * design and integer convolution. Reference header retains the pre-float commit
- * as a checked-in fixture; never regenerated from the code under test. */
+ * design and integer convolution. Reference header is extracted by the runner
+ * from the pre-float commit; never regenerated from the code under test. */
 #define TEST_UAC 1
 #define TEST_HOST 0
 #define main usb_host_model_main

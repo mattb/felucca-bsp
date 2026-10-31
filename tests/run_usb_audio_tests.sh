@@ -29,8 +29,15 @@ done
 # Unconfigured legacy stereo remains valid, including its unnamed spatial L/R descriptor.
 "${CC:-cc}" -std=c11 -O1 -ffp-contract=off -w -fsanitize=address,undefined -Ichip tests/usb_audio_test.c -lm -o "$AUDIO_TEST_DIR/default"
 "$AUDIO_TEST_DIR/default"
-# Compare against a checked-in fixed-point fixture, independent of this generator.
+# Precision regression requires the pre-float commit (normal branch history).
+FIR_BASELINE=ebd08f434a68211bd866a37d55e1f8c8b5512f76
+if ! git cat-file -e "$FIR_BASELINE:chip/uac_fir.h" 2>/dev/null; then
+    echo "Precision test requires full branch history containing $FIR_BASELINE" >&2
+    exit 1
+fi
+git show "$FIR_BASELINE:chip/uac_fir.h" > "$AUDIO_TEST_DIR/fixed.h"
+sed '/^#define /d; s/UAC_FIR\[/UAC_FIR_REFERENCE[/' "$AUDIO_TEST_DIR/fixed.h" > "$AUDIO_TEST_DIR/uac_fir_reference.h"
 "${CC:-cc}" -std=c11 -O2 -ffp-contract=off -w -fsanitize=address,undefined \
-    -Ichip -DFELUCCA_UAC_CHANNELS=6 -DFELUCCA_UAC_48K=1 \
+    -Ichip -I"$AUDIO_TEST_DIR" -DFELUCCA_UAC_CHANNELS=6 -DFELUCCA_UAC_48K=1 \
     tests/usb_audio_precision_test.c -o "$AUDIO_TEST_DIR/precision"
 "$AUDIO_TEST_DIR/precision"
