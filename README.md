@@ -63,7 +63,7 @@ the JieLi toolchain and gives the same image as it does inside Felucca.
 
 `tools/` has the package builder, the USB-MIDI installer and `fm1_rescue` (stock firmware back on an FM-1 that cannot
 start, through the chip's update mode; macOS) (the loader marker `FELUCCA-LOADER-1` is part of the loader's contract). The loader, `ota.c` and `usb.c`
-still use `FELUCCA_*` macro names; they will be renamed. USB capture supports [named channels and 48 kHz conversion](docs/USB_AUDIO.md). The included FIR table is reproducible with `tools/gen_uac_fir.py`.
+still use `FELUCCA_*` macro names; they will be renamed. USB capture supports [named channels at 44.1 kHz](docs/USB_AUDIO.md). The existing stereo 48 kHz option still requires an externally generated `uac_fir.h`.
 
 ## Licence
 

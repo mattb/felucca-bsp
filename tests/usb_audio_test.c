@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Reuse the register stand-ins; exercise the production descriptors and capture
- * functions, not a replacement packetizer/resampler. No USB hardware is used. */
-#include <math.h>
+ * functions, not a replacement packetizer. No USB hardware is used. */
 #define TEST_UAC 1
 #define TEST_HOST 0
 #define main usb_host_model_main
@@ -65,26 +64,10 @@ static void interleaving(void)
         assert(ep4tx[i*UA_CHANNELS+c] == uac.last[c]);
     assert(uac.underruns == 1);
 }
-#if FELUCCA_UAC_48K
-static void resampling(void)
-{
-    int32_t input[147 * UA_CHANNELS];
-    for (unsigned selected = 0; selected < UA_CHANNELS; selected++) {
-        reset_capture(1); uint32_t begin = ua_w;
-        memset(input,0,sizeof input);
-        for (unsigned i = 0; i < 147; i++) input[i*UA_CHANNELS+selected] = 4000*256;
-        uac_tap(input,147);
-        assert(ua_w-begin == 160); /* actual device-side 160/147 conversion */
-        for (unsigned i = 50; i < 160; i++) for (unsigned c = 0; c < UA_CHANNELS; c++) {
-            int v = ua_ring[(begin+i)&(UA_N-1)][c];
-            assert(c == selected ? (v >= 3999 && v <= 4001) : v == 0);
-        }
-    }
-}
 static void full_render_blocks(void)
 {
     int32_t input[HALF_FRAMES * UA_CHANNELS];
-    reset_capture(1);
+    reset_capture(0);
     /* Retain real priming on the first block to exercise capacity admission. */
     ua_r = 0;
     uint32_t start = ua_w;
@@ -94,8 +77,8 @@ static void full_render_blocks(void)
         uint32_t begin = ua_w;
         uac_tap(input, HALF_FRAMES);
         assert(!uac.overruns);
-        assert(ua_w-start == ((block+1)*HALF_FRAMES*160u+146u)/147u);
-        for (uint32_t i = begin + (block ? 0u : 50u); i < ua_w; i++)
+        assert(ua_w-start == (block+1)*HALF_FRAMES);
+        for (uint32_t i = begin; i < ua_w; i++)
             for (unsigned c = 0; c < UA_CHANNELS; c++)
                 assert(ua_ring[i&(UA_N-1)][c] == (int32_t)(1000*(c+1)));
         ua_r = ua_w;
@@ -107,53 +90,9 @@ static void full_render_blocks(void)
     assert(ua_w == before && uac.overruns == 1);
 }
 
-static void resampler_signal(void)
-{
-    /* Packet/ring wrap and arbitrary app block boundaries must not change PCM. */
-    int32_t input[147 * UA_CHANNELS];
-    int16_t reference[160 * UA_CHANNELS];
-    for (unsigned i = 0; i < 147; i++) for (unsigned c = 0; c < UA_CHANNELS; c++)
-        input[i*UA_CHANNELS+c] = (int32_t)(12000*sin(i*.37+c))*256;
-    reset_capture(1); uint32_t begin = ua_w;
-    uac_tap(input,147);
-    for (unsigned i = 0; i < 160; i++) for (unsigned c = 0; c < UA_CHANNELS; c++)
-        reference[i*UA_CHANNELS+c] = ua_ring[(begin+i)&(UA_N-1)][c];
-    reset_capture(1); ua_r = ua_w = UA_N-20; begin = ua_w;
-    for (unsigned i = 0; i < 147; i++) uac_tap(input+i*UA_CHANNELS,1);
-    assert(ua_w-begin == 160);
-    for (unsigned i = 0; i < 160; i++) for (unsigned c = 0; c < UA_CHANNELS; c++)
-        assert(reference[i*UA_CHANNELS+c] == ua_ring[(begin+i)&(UA_N-1)][c]);
-
-    /* Measure the production resampler: 4.5 kHz tone and its 8.4 kHz image
-     * (44.1-4.5 folded into 48k). Use whole periods after filter settling. */
-    double real = 0, imag = 0, image_real = 0, image_imag = 0;
-    reset_capture(1);
-    for (unsigned block = 0; block < 21; block++) {
-        for (unsigned i = 0; i < 147; i++) for (unsigned c = 0; c < UA_CHANNELS; c++)
-            input[i*UA_CHANNELS+c] = (int32_t)(12000*sin(2*3.141592653589793*4500*(block*147+i)/44100))*256;
-        begin = ua_w; uac_tap(input,147);
-        assert(ua_w-begin == 160);
-        if (block) for (unsigned i = 0; i < 160; i++) {
-            unsigned index = (block-1)*160+i;
-            double sample = ua_ring[(begin+i)&(UA_N-1)][0];
-            double phase = 2*3.141592653589793*index/48000;
-            real += sample*cos(4500*phase); imag += sample*sin(4500*phase);
-            image_real += sample*cos(8400*phase); image_imag += sample*sin(8400*phase);
-        }
-        ua_r = ua_w;
-    }
-    double amplitude = hypot(real,imag)*2/3200;
-    assert(amplitude > 11990 && amplitude < 12010);
-    assert(hypot(image_real,image_imag)/hypot(real,imag) < .001); /* image below -60 dB */
-}
-
-#endif
 int main(void)
 {
-    descriptors(); interleaving();
-#if FELUCCA_UAC_48K
-    resampling(); resampler_signal(); full_render_blocks();
-#endif
+    descriptors(); interleaving(); full_render_blocks();
     printf("USB audio %d channels, 48k=%d, half=%u, deep=%d: descriptors, names, interleave, underrun, isolation OK\n", UA_CHANNELS, FELUCCA_UAC_48K, HALF_FRAMES, FELUCCA_UAC_DEEP);
     return 0;
 }

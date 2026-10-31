@@ -66,6 +66,9 @@ _Static_assert(sizeof ua_channel_names / sizeof ua_channel_names[0] == UA_CHANNE
 #ifndef FELUCCA_UAC_48K
 #define FELUCCA_UAC_48K 1
 #endif
+#if FELUCCA_UAC && FELUCCA_UAC_48K && UA_CHANNELS != 2
+#error Multichannel USB capture requires FELUCCA_UAC_48K=0 (44.1 kHz only)
+#endif
 #ifndef FELUCCA_UAC_OUT
 #define FELUCCA_UAC_OUT 0
 #endif
@@ -207,7 +210,7 @@ static struct {
 #define RS_H 32u
 _Static_assert(RS_H >= UAC_FIR_N && (RS_H & (RS_H - 1u)) == 0, "the history holds a window");
 static struct {
-    float samples[UA_CHANNELS][2u * RS_H];
+    int16_t l[2u * RS_H], r[2u * RS_H];   /* r right after l (the FIR loop reads both from one pointer) */
     uint32_t w;                  /* input frames written */
     uint32_t ph;                 /* the next output's phase, 0..159 (its newest input frame: the next written) */
 #if FELUCCA_UAC_TONE
@@ -1281,8 +1284,8 @@ static __attribute__((noinline)) void uac_render_start(void)   /* audio ISR, bef
         uac.ring48 = uac.r48;
         if (uac.ring48) {                               /* the resampler starts from silence */
             prime = UA_PRIME48;
-            for (uint32_t c = 0; c < UA_CHANNELS; c++)
-                for (i = 0; i < 2u * RS_H; i++) rs.samples[c][i] = 0;
+            for (i = 0; i < 2u * RS_H; i++)
+                rs.l[i] = rs.r[i] = 0;
             rs.w = rs.ph = 0;
         }
 #endif
@@ -1311,10 +1314,15 @@ static inline int32_t uac_s16(int32_t v)
 static inline int32_t uac_in16(int32_t v) { return uac_s16((v + 128) >> 8); }
 
 #if FELUCCA_UAC_48K
+/* one tap into a sum, out of line and in registers only (docs/CPU.md: 64-bit multiplies inlined among loads, the
+ * history's 16-bit ones above all, are what fails on the FM-1; here nothing is loaded and the product is used at once) */
+static __attribute__((noinline)) int64_t uac_mac48(int64_t a, int32_t t, int32_t x)
+{
+    return a + (int64_t)t * x;
+}
 /* 44.1 -> 48 kHz (x 160 / 147), one block: each input frame enters the history, then the 1 or 2 output
  * frames whose newest input it is: phase ph, the window of UAC_FIR_N frames ending at it, the taps of
- * phase ph (or of 159 - ph backwards: the prototype is symmetric), single-precision multiply/adds.
- * No 64-bit multiplies (see docs/CPU.md). */
+ * phase ph (or of 159 - ph backwards: the prototype is symmetric), Q30 into 64-bit sums. */
 static __attribute__((noinline)) void uac_tap48(const int32_t *out, uint32_t n)
 {
     uint32_t w = ua_w, i, j, k = 0, h = rs.w, ph = rs.ph;
@@ -1324,35 +1332,42 @@ static __attribute__((noinline)) void uac_tap48(const int32_t *out, uint32_t n)
     }
     for (i = 0; i < n; i++) {
         uint32_t s = h & (RS_H - 1u);
-        for (uint32_t c = 0; c < UA_CHANNELS; c++) {
-            float sample = (float)uac_in16(out[UA_CHANNELS * i + c]);
-            rs.samples[c][s] = rs.samples[c][s + RS_H] = sample;
-        }
+        int16_t l = (int16_t)uac_in16(out[2u * i]), r = (int16_t)uac_in16(out[2u * i + 1u]);
+        rs.l[s] = rs.l[s + RS_H] = l;
+        rs.r[s] = rs.r[s + RS_H] = r;
         h++;
-        s = (h - UAC_FIR_N) & (RS_H - 1u);
+        s = (h - UAC_FIR_N) & (RS_H - 1u);              /* the window: oldest .. this frame */
         do {
-            for (uint32_t channel = 0; channel < UA_CHANNELS; channel++) {
-                const float *x = &rs.samples[channel][s];
-                float sum = 0;
-                if (ph < UAC_FIR_L / 2u) {
-                    const float *c = UAC_FIR[ph];
-                    for (j = UAC_FIR_N; j; j--, x++) sum += *c++ * *x;
-                } else {
-                    const float *c = &UAC_FIR[UAC_FIR_L - 1u - ph][UAC_FIR_N - 1u];
-                    for (j = UAC_FIR_N; j; j--, x++) sum += *c-- * *x;
+            const int16_t *x = &rs.l[s];                /* R: x[2 * RS_H] */
+            int64_t al = 0, ar = 0;
+            int32_t yl, yr;
+            if (ph < UAC_FIR_L / 2u) {
+                const int32_t *c = UAC_FIR[ph];
+                for (j = UAC_FIR_N; j; j--, x++) {
+                    int32_t t = *c++;
+                    al = uac_mac48(al, t, x[0]);
+                    ar = uac_mac48(ar, t, x[2u * RS_H]);
                 }
-                int32_t sample = uac_s16((int32_t)(sum + (sum < 0 ? -0.5f : 0.5f)));
-#if FELUCCA_UAC_TONE
-                uint32_t t = rs.tone, q = t < 50u ? t : 100u - t;
-                if (channel & 1u) q = 50u - q;
-                sample = (int32_t)q * 1000 - 25000;
-#endif
-                ua_ring[(w + k) & (UA_N - 1u)][channel] = (int16_t)sample;
+            } else {
+                const int32_t *c = &UAC_FIR[UAC_FIR_L - 1u - ph][UAC_FIR_N - 1u];
+                for (j = UAC_FIR_N; j; j--, x++) {
+                    int32_t t = *c--;
+                    al = uac_mac48(al, t, x[0]);
+                    ar = uac_mac48(ar, t, x[2u * RS_H]);
+                }
             }
+            yl = uac_s16((int32_t)((al + (1 << (UAC_FIR_Q - 1))) >> UAC_FIR_Q));
+            yr = uac_s16((int32_t)((ar + (1 << (UAC_FIR_Q - 1))) >> UAC_FIR_Q));
 #if FELUCCA_UAC_TONE
-            rs.tone = rs.tone == 99u ? 0u : rs.tone + 1u;
+            {   /* bench: the triangles at 48 kHz (not resampled), one per output frame */
+                uint32_t t = rs.tone, q = t < 50u ? t : 100u - t, q2 = t < 50u ? 50u - t : t - 50u;
+                rs.tone = t == 99u ? 0u : t + 1u;
+                yl = (int32_t)q * 1000 - 25000;
+                yr = (int32_t)q2 * 1000 - 25000;
+            }
 #endif
-            k++;
+            ua_ring[(w + k) & (UA_N - 1u)][0] = (int16_t)yl;
+            ua_ring[(w + k++) & (UA_N - 1u)][1] = (int16_t)yr;
             ph += UAC_FIR_M;
         } while (ph < UAC_FIR_L);
         ph -= UAC_FIR_L;
