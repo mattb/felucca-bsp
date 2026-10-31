@@ -38,12 +38,8 @@ sh tests/run_usb_audio_tests.sh
 There is no dynamic allocation. At six channels, the normal 512-frame capture
 ring occupies 6,144 bytes; the optional deep 1,024-frame ring occupies 12,288
 bytes. The largest 48 kHz endpoint packet is 588 bytes (49 frames), below the
-full-speed isochronous limit. For more than two channels the descriptor reserves
-7/6 of the payload rounded to four bytes (688 bytes for six channels at 48 kHz),
-while packet buffers and transmitted byte counts stay unchanged. This is extra
-USB 2 hub scheduling headroom, not additional audio or padding. The USB standard
-already accounts for worst-case bit stuffing in bus allocation; this conservative
-reservation is a compatibility measure requiring hardware verification.
+full-speed isochronous limit. The endpoint descriptor advertises that same maximum
+payload size.
 Resampler history occupies 1,536 bytes and its shared
 coefficient table 10,240 bytes. Float multiply/adds avoid the CPU's documented
 64-bit multiply issue and its out-of-line helper overhead. Compared
