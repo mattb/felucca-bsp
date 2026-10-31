@@ -23,10 +23,14 @@ static void descriptors(void)
             if (d[p+4] == UA_CHANNELS && d[p+7] == (FELUCCA_UAC_48K ? 2 : 1)) format++;
         }
         if (d[p+1] == 5 && d[p+2] == 0x84) {
-            assert((d[p+4] | d[p+5]<<8) == UAC_MAXP); endpoint++;
+            assert((d[p+4] | d[p+5]<<8) == UAC_EP_MAXP); endpoint++;
         }
     }
     assert(terminal == 1 && format && endpoint == 1);
+    assert(sizeof ep4tx == UAC_MAXP); /* reservation never grows the DMA payload */
+    if (UA_CHANNELS <= 2) assert(UAC_EP_MAXP == UAC_MAXP);
+    else assert(UAC_EP_MAXP * 6 >= UAC_MAXP * 7 && UAC_EP_MAXP % 4 == 0);
+    if (UA_CHANNELS == 6 && FELUCCA_UAC_48K) assert(UAC_EP_MAXP == 688);
 #ifdef FELUCCA_UAC_CHANNEL_NAMES
     for (unsigned c = 0; c < UA_CHANNELS; c++) {
         assert(get_desc(0x300 + UA_CHANNEL_STRING + c, &d, &n));

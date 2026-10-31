@@ -159,6 +159,10 @@ _Static_assert(UA_HI48 + UA_REND48 + UA_MAXF < UA_N, "the ring holds the band, a
 #define UA_MAXF 46u              /* frames in the largest packet */
 #endif
 #define UAC_MAXP (UA_MAXF * UA_FRAME_BYTES)
+/* Reserve extra scheduling room for larger captures behind USB 2 hubs.
+ * Payload/DMA size stays UAC_MAXP; this is descriptor-only headroom. */
+#define UAC_EP_MAXP (UA_CHANNELS > 2 ? (((UAC_MAXP * 7u + 5u) / 6u + 3u) & ~3u) : UAC_MAXP)
+_Static_assert(UAC_EP_MAXP <= 1023u, "full-speed endpoint reservation limit");
 _Static_assert(UAC_MAXP <= 1023u, "full-speed isochronous packet limit");
 _Static_assert(UA_HI + HALF_FRAMES + UA_MAXF < UA_N, "the ring holds the band, a render and a packet");
 static int16_t ua_ring[UA_N][UA_CHANNELS] FELUCCA_UAC_RING_ATTR __attribute__((aligned(4)));
@@ -397,7 +401,7 @@ static uint32_t midi_out_room(void)                  /* free slots in the out ri
     9, 4, (s), 1, 1, 1, 2, 0, 0,                           /* alt 1: the stream */                      \
     7, 0x24, 1, 2, 1, 0x01, 0x00,                          /* AS general: terminal 2, delay 1, PCM */   \
     D_FMT                                                  /* type I: 2 ch, 16 bit, the rates */        \
-    9, 5, 0x84, 0x05, UAC_MAXP & 0xFF, UAC_MAXP >> 8, 1, 0, 0,   /* EP4 IN isochronous async, 1 ms */   \
+    9, 5, 0x84, 0x05, UAC_EP_MAXP & 0xFF, UAC_EP_MAXP >> 8, 1, 0, 0,   /* EP4 IN isochronous async, 1 ms */   \
     7, 0x25, 1, 0x01, 0, 0, 0,                             /* CS endpoint: sampling frequency control */
 #else
 #define D_AC(a) 9, 4, (a), 0, 0, 1, 1, 0, 0, 9, 0x24, 1, 0x00, 0x01, 9, 0, 1, (a) + 1,
