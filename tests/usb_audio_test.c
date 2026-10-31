@@ -90,9 +90,72 @@ static void full_render_blocks(void)
     assert(ua_w == before && uac.overruns == 1);
 }
 
+static void playback(void)
+{
+    const uint8_t *d; uint16_t size; unsigned terminal = 0, endpoint = 0;
+    assert(get_desc(0x200, &d, &size));
+    for (unsigned p = 0; p < size; p += d[p]) {
+        if (d[p] == 12 && d[p+1] == 0x24 && d[p+2] == 2 && d[p+3] == 3) {
+            assert(d[p+7] == UO_CHANNELS && d[p+8] == UO_CHANNEL_CONFIG && d[p+10] == UO_CHANNEL_STRING); terminal++;
+        }
+        if (d[p+1] == 5 && d[p+2] == 4) {
+            assert((d[p+4] | d[p+5]<<8) == UO_MAXP); endpoint++;
+        }
+    }
+    assert(terminal == 1 && endpoint == 1);
+#ifdef FELUCCA_UAC_OUT_CHANNEL_NAMES
+    for (unsigned c = 0; c < UO_CHANNELS; c++) {
+        assert(get_desc(0x300 + UO_CHANNEL_STRING + c, &d, &size));
+        assert(size == 2 + 2*strlen(uo_channel_names[c]));
+        for (unsigned j = 0; j < strlen(uo_channel_names[c]); j++)
+            assert(d[2+j*2] == uo_channel_names[c][j] && d[3+j*2] == 0);
+    }
+#endif
+    memset(&uo, 0, sizeof uo); usb.config = 1; uo.alt = 1;
+    /* Exercise the real endpoint receive path over the ring boundary. */
+    uo_w = uo_r = UO_N-20;
+    for (unsigned i = 0; i < 45; i++) for (unsigned c = 0; c < UO_CHANNELS; c++)
+        ep4rx[i*UO_CHANNELS+c] = (int16_t)(i+1000*c);
+    regs[4][S_RXCSR1] = 1; regs[4][S_RXCSR2] = 0;
+    regs[4][S_RXCOUNT1] = (45*UO_FRAME_BYTES)&255;
+    regs[4][S_RXCOUNT2] = (45*UO_FRAME_BYTES)>>8;
+    uo_service();
+    assert(uo_w == UO_N+25 && uo.frames == 45);
+    for (unsigned i = 0; i < 45; i++) for (unsigned c = 0; c < UO_CHANNELS; c++)
+        assert(uo_ring[(UO_N-20+i)&(UO_N-1)][c] == (int16_t)(i+1000*c));
+    regs[4][S_RXCSR1] = 1; uo_r = uo_w-UO_N;
+    uo_service(); assert(uo.overruns == 1 && uo_w == UO_N+25);
+    /* Shared half-frame interpolation: one active input at a time, across wrap. */
+    for (unsigned active = 0; active < UO_CHANNELS; active++) {
+        memset(uo_ring, 0, sizeof uo_ring);
+        uo_r = UO_N-20; uo_w = uo_r+UO_TGT+13;
+        uo.go = 1; uo.pos = 32768; uo.err = 13; /* step exactly 65536 */
+        for (unsigned i = 0; i < UO_TGT+13; i++)
+            uo_ring[(uo_r+i)&(UO_N-1)][active] = (int16_t)(-16000+100*i);
+        int32_t output[64*UO_CHANNELS] = {0};
+        uac_play(output, 64, 4096);
+        for (unsigned i = 0; i < 64; i++) for (unsigned c = 0; c < UO_CHANNELS; c++)
+            assert(output[i*UO_CHANNELS+c] == (c == active ? (-16000+(int)i*100+50)*256 : 0));
+        assert(uo_r == UO_N+44 && uo.pos == 32768);
+    }
+    /* Unity callback input remains within signed24bit at both PCM16 rails. */
+    for (unsigned rail = 0; rail < 2; rail++) {
+        uo_r = 0; uo_w = UO_TGT+13; uo.go = 1; uo.pos = 0; uo.err = 13;
+        int16_t sample = rail ? 32767 : -32768;
+        for (unsigned i = 0; i < UO_N; i++) for (unsigned c = 0; c < UO_CHANNELS; c++)
+            uo_ring[i][c] = sample;
+        int32_t output[64*UO_CHANNELS] = {0}; uac_play(output,64,4096);
+        for (unsigned i = 0; i < 64*UO_CHANNELS; i++) assert(output[i] == (int32_t)sample*256);
+    }
+    int32_t silence[64*UO_CHANNELS] = {0};
+    uo_w = uo_r; uac_play(silence, 64, 4096);
+    assert(!uo.go && uo.underruns == 1);
+    for (unsigned i = 0; i < 64*UO_CHANNELS; i++) assert(silence[i] == 0);
+}
+
 int main(void)
 {
-    descriptors(); interleaving(); full_render_blocks();
-    printf("USB audio %d channels, 48k=%d, half=%u, deep=%d: descriptors, names, interleave, underrun, isolation OK\n", UA_CHANNELS, FELUCCA_UAC_48K, HALF_FRAMES, FELUCCA_UAC_DEEP);
+    descriptors(); interleaving(); full_render_blocks(); playback();
+    printf("USB audio %d capture/%d playback, half=%u, deep=%d: descriptors, names, routing, isolation, wrap, underrun OK\n", UA_CHANNELS, UO_CHANNELS, HALF_FRAMES, FELUCCA_UAC_DEEP);
     return 0;
 }

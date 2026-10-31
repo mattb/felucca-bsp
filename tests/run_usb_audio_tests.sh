@@ -15,12 +15,20 @@ for channels in 1 2 6; do
             "${CC:-cc}" -std=c11 -O1 -Wall -Wextra -Werror -Wno-unused-function \
                 -Wno-unused-variable -Wno-missing-field-initializers \
                 -fsanitize=address,undefined -Ichip -DFELUCCA_UAC_CHANNELS=$channels \
-                -DHALF_FRAMES=$half -DFELUCCA_UAC_DEEP=$deep \
-                "-DFELUCCA_UAC_CHANNEL_NAMES=$names" -DFELUCCA_UAC_48K=0 \
+                -DHALF_FRAMES=$half -DFELUCCA_UAC_DEEP=$deep -DFELUCCA_UAC_OUT_CHANNELS=$channels \
+                "-DFELUCCA_UAC_CHANNEL_NAMES=$names" "-DFELUCCA_UAC_OUT_CHANNEL_NAMES=$names" -DFELUCCA_UAC_48K=0 \
                 tests/usb_audio_test.c -o "$AUDIO_TEST_DIR/audio"
             "$AUDIO_TEST_DIR/audio"
         done
     done
+done
+# The directions may have different layouts.
+for pair in '2 6' '6 2'; do
+    set -- $pair
+    "${CC:-cc}" -std=c11 -O1 -w -fsanitize=address,undefined -Ichip \
+        -DFELUCCA_UAC_CHANNELS=$1 -DFELUCCA_UAC_OUT_CHANNELS=$2 \
+        tests/usb_audio_test.c -o "$AUDIO_TEST_DIR/asymmetric"
+    "$AUDIO_TEST_DIR/asymmetric"
 done
 # Unconfigured legacy stereo retains its unnamed spatial L/R descriptor.
 "${CC:-cc}" -std=c11 -O1 -w -fsanitize=address,undefined -Ichip tests/usb_audio_test.c -o "$AUDIO_TEST_DIR/default"

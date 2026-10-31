@@ -44,7 +44,7 @@
 #ifndef FELUCCA_UAC
 #define FELUCCA_UAC 0
 #endif
-/* Capture layout is fixed for this build; playback remains stereo. Named
+/* Audio layouts are fixed for this build. Named
  * channels are a non-spatial cluster, allowing either stems or stereo pairs. */
 #ifndef FELUCCA_UAC_CHANNELS
 #define FELUCCA_UAC_CHANNELS 2
@@ -62,6 +62,23 @@ _Static_assert(sizeof ua_channel_names / sizeof ua_channel_names[0] == UA_CHANNE
 #else
 #define UA_CHANNEL_CONFIG (UA_CHANNELS == 2 ? 3 : 0)
 #define UA_CHANNEL_STRING 0
+#endif
+#ifndef FELUCCA_UAC_OUT_CHANNELS
+#define FELUCCA_UAC_OUT_CHANNELS 2
+#endif
+#if FELUCCA_UAC_OUT_CHANNELS < 1 || FELUCCA_UAC_OUT_CHANNELS > 6
+#error FELUCCA_UAC_OUT_CHANNELS must be between 1 and 6
+#endif
+#define UO_CHANNELS FELUCCA_UAC_OUT_CHANNELS
+#define UO_FRAME_BYTES (UO_CHANNELS * 2u)
+#ifdef FELUCCA_UAC_OUT_CHANNEL_NAMES
+#define UO_CHANNEL_CONFIG 0
+#define UO_CHANNEL_STRING (3 + UA_CHANNELS)
+static const char *const uo_channel_names[] = {FELUCCA_UAC_OUT_CHANNEL_NAMES};
+_Static_assert(sizeof uo_channel_names / sizeof uo_channel_names[0] == UO_CHANNELS, "one name per USB playback channel");
+#else
+#define UO_CHANNEL_CONFIG (UO_CHANNELS == 2 ? 3 : 0)
+#define UO_CHANNEL_STRING 0
 #endif
 #ifndef FELUCCA_UAC_48K
 #define FELUCCA_UAC_48K 1
@@ -188,14 +205,14 @@ static struct {
     uint32_t rate_sets;                          /* SET_CUR sampling frequency requests */
 } uac;
 #if FELUCCA_UAC_OUT
-/* USB audio output: the packets in a ring (16-bit L | R << 16), read by uac_play at the I2S clock */
+/* USB audio output: interleaved PCM16 frames, read by uac_play at the I2S clock */
 #define UO_N 2048u               /* frames; a power of two */
-#define UO_MAXF 49u              /* frames in the largest packet the host may send (44.1: 44 or 45) */
-#define UO_MAXP (UO_MAXF * 4u)
+#define UO_MAXF (UO_CHANNELS == 2 ? 49u : 46u) /* retain legacy stereo reservation; multichannel is 44.1 kHz */
+#define UO_MAXP (UO_MAXF * UO_FRAME_BYTES)
 #define UO_TGT (2u * HALF_FRAMES)   /* the fill a render aims to start at: ~11.6 ms with 256-frame halves */
-static uint32_t uo_ring[UO_N];
+static int16_t uo_ring[UO_N][UO_CHANNELS];
 static volatile uint32_t uo_w, uo_r;
-static uint32_t ep4rx[UO_MAXF + 1u] __attribute__((aligned(4)));
+static int16_t ep4rx[UO_MAXF * UO_CHANNELS + 2u] __attribute__((aligned(4)));
 static struct {
     volatile uint8_t alt;        /* the output's streaming interface: 1 = the host plays */
     uint8_t go;                  /* primed: uac_play reads the ring */
@@ -378,13 +395,13 @@ static uint32_t midi_out_room(void)                  /* free slots in the out ri
     11, 0x24, 1, 0x00, 0x01, 53, 0, 3, AC_COLL3(a),        /* AC header: MIDI, both streams */          \
     12, 0x24, 2, 1, 0x03, 0x06, 0, UA_CHANNELS, UA_CHANNEL_CONFIG, 0, UA_CHANNEL_STRING, 0,    /* input terminal 1: capture cluster */      \
     9, 0x24, 3, 2, 0x01, 0x01, 0, 1, 0,                    /* output terminal 2: USB streaming, from 1 */ \
-    12, 0x24, 2, 3, 0x01, 0x01, 0, 2, 0x03, 0x00, 0, 0,    /* input terminal 3: USB streaming, 2 ch */   \
+    12, 0x24, 2, 3, 0x01, 0x01, 0, UO_CHANNELS, UO_CHANNEL_CONFIG, 0, UO_CHANNEL_STRING, 0,    /* input terminal 3: playback cluster */   \
     9, 0x24, 3, 4, 0x01, 0x03, 0, 3, 0,                    /* output terminal 4: speaker, from 3 */
 #define D_ASO(o)                                                                                     \
     9, 4, (o), 0, 0, 1, 2, 0, 0,                           /* the output stream, alt 0: no bandwidth */ \
     9, 4, (o), 1, 1, 1, 2, 0, 0,                           /* alt 1: the stream */                      \
     7, 0x24, 1, 3, 1, 0x01, 0x00,                          /* AS general: terminal 3, delay 1, PCM */   \
-    11, 0x24, 2, 1, 2, 2, 16, 1, 0x44, 0xAC, 0x00,         /* type I: 2 ch, 16 bit, 44100 */            \
+    11, 0x24, 2, 1, UO_CHANNELS, 2, 16, 1, 0x44, 0xAC, 0x00,         /* type I: playback PCM16, 44100 */            \
     9, 5, 0x04, 0x09, UO_MAXP & 0xFF, UO_MAXP >> 8, 1, 0, 0,   /* EP4 OUT isochronous adaptive, 1 ms */ \
     7, 0x25, 1, 0x00, 0, 0, 0,                             /* CS endpoint: no controls */
 #else
@@ -436,7 +453,7 @@ static uint32_t midi_out_room(void)                  /* free slots in the out ri
 #define BCD_LO(cdc) (0x10 * (FELUCCA_UAC + FELUCCA_UAC_48K) + 0x40 * FELUCCA_UAC_OUT + 0x08 * FELUCCA_UAC_AS_FIRST + \
                      ((cdc) ? 0x01 + 2 * FELUCCA_USB_LAYOUT : 0))
 /* A changed channel layout must not reuse the legacy stereo descriptor cache. */
-#define BCD_HI ((FELUCCA_UAC && (UA_CHANNELS != 2 || UA_CHANNEL_STRING)) ? (3 + UA_CHANNELS) : 3)
+#define BCD_HI ((FELUCCA_UAC_OUT && (UO_CHANNELS != 2 || UO_CHANNEL_STRING)) ? (0x10 * UA_CHANNELS + UO_CHANNELS) : ((FELUCCA_UAC && (UA_CHANNELS != 2 || UA_CHANNEL_STRING)) ? (3 + UA_CHANNELS) : 3))
 #define D_DEV(bcdusb, cls, sub, proto, cdc)                                                          \
     18, 1, (bcdusb) & 0xFF, (bcdusb) >> 8, (cls), (sub), (proto), 64, 0x09, 0x12, FELUCCA_USB_PID & 0xFF, \
     FELUCCA_USB_PID >> 8, BCD_LO(cdc), BCD_HI, 1, 2, 0, 1
@@ -496,7 +513,7 @@ static const uint8_t STR2[] = {30, 3, 'F', 0, 'e', 0, 'l', 0, 'u', 0, 'c', 0, 'c
 static const uint8_t STR2[] = {16, 3, 'F', 0, 'e', 0, 'l', 0, 'u', 0, 'c', 0, 'c', 0, 'a', 0};
 #endif
 
-#if defined(FELUCCA_USB_MANUFACTURER) || defined(FELUCCA_USB_PRODUCT) || defined(FELUCCA_UAC_CHANNEL_NAMES)
+#if defined(FELUCCA_USB_MANUFACTURER) || defined(FELUCCA_USB_PRODUCT) || defined(FELUCCA_UAC_CHANNEL_NAMES) || defined(FELUCCA_UAC_OUT_CHANNEL_NAMES)
 /* A string descriptor built from a plain ASCII string (the build settings FELUCCA_USB_MANUFACTURER and
  * FELUCCA_USB_PRODUCT, e.g. -DFELUCCA_USB_PRODUCT='"CTL-1 FM-1"'), at most 31 characters. EP0 sends one
  * descriptor at a time, so one buffer serves both. */
@@ -555,6 +572,10 @@ static int get_desc(uint32_t wvalue, const uint8_t **d, uint16_t *l)
 #if FELUCCA_UAC && defined(FELUCCA_UAC_CHANNEL_NAMES)
             if ((wvalue & 255u) >= UA_CHANNEL_STRING && (wvalue & 255u) < UA_CHANNEL_STRING + UA_CHANNELS)
                 return usb_str_desc(ua_channel_names[(wvalue & 255u) - UA_CHANNEL_STRING], d, l);
+#endif
+#if FELUCCA_UAC_OUT && defined(FELUCCA_UAC_OUT_CHANNEL_NAMES)
+            if ((wvalue & 255u) >= UO_CHANNEL_STRING && (wvalue & 255u) < UO_CHANNEL_STRING + UO_CHANNELS)
+                return usb_str_desc(uo_channel_names[(wvalue & 255u) - UO_CHANNEL_STRING], d, l);
 #endif
             return 0;
         }
@@ -1448,8 +1469,11 @@ static uint32_t uac_packet(int16_t *d)
     fill = ua_w - r;
     RING_PUBLISH();                                     /* the slots after the index */
     k = fill < n ? fill : n;
-    for (i = 0; i < k; i++)
-        for (uint32_t c = 0; c < UA_CHANNELS; c++) d[i * UA_CHANNELS + c] = ua_ring[(r + i) & (UA_N - 1u)][c];
+    uint32_t first = UA_N - (r & (UA_N - 1u));
+    if (first > k) first = k;
+    memcpy(d, ua_ring[r & (UA_N - 1u)], first * UA_FRAME_BYTES);
+    memcpy(d + first * UA_CHANNELS, ua_ring, (k - first) * UA_FRAME_BYTES);
+    i = k;
     if (k < n) {
         uac.underruns++;
         for (; i < n; i++)
@@ -1476,7 +1500,7 @@ static void uo_service(void)                            /* an EP4 OUT packet int
     csr = sie_rd(S_RXCSR1) | (sie_rd(S_RXCSR2) << 8);
     if (!(csr & 1u))
         return;
-    n = (sie_rd(S_RXCOUNT1) | (sie_rd(S_RXCOUNT2) << 8)) / 4u;
+    n = (sie_rd(S_RXCOUNT1) | (sie_rd(S_RXCOUNT2) << 8)) / UO_FRAME_BYTES;
     if (n > UO_MAXF)
         n = UO_MAXF;
     fm1_usb_rx_sync();
@@ -1486,7 +1510,8 @@ static void uo_service(void)                            /* an EP4 OUT packet int
         uo.overruns++;                                  /* nobody plays it (or the rates part): drop */
     } else {
         for (i = 0; i < n; i++)
-            uo_ring[(w + i) & (UO_N - 1u)] = ep4rx[i];
+            for (uint32_t c = 0; c < UO_CHANNELS; c++)
+                uo_ring[(w + i) & (UO_N - 1u)][c] = ep4rx[i * UO_CHANNELS + c];
         RING_PUBLISH();
         uo_w = w + n;
     }
@@ -1497,7 +1522,7 @@ static void uo_service(void)                            /* an EP4 OUT packet int
     sie_wr(S_RXCSR2, csr >> 8);
 }
 
-/* audio ISR, after the render: the computer's audio added to the block (24-bit, as the I2S takes it), at gain
+/* audio ISR: add UO_CHANNELS interleaved channels to the buffer (zero it for raw input), at gain
  * gain_q12 (4096 = as sent), resampled from the ring: the read rate is 44.1 / 44.1176 kHz and steered by how far
  * the fill at a render's start is from UO_TGT (a frame's error: 1/32768 faster or slower) */
 static __attribute__((noinline)) void uac_play(int32_t *out, uint32_t n, uint32_t gain_q12)
@@ -1530,12 +1555,13 @@ static __attribute__((noinline)) void uac_play(int32_t *out, uint32_t n, uint32_
     }
     RING_PUBLISH();
     for (i = 0; i < n; i++) {
-        uint32_t k = pos >> 16, a = uo_ring[(r + k) & (UO_N - 1u)], b = uo_ring[(r + k + 1u) & (UO_N - 1u)];
+        uint32_t k = pos >> 16;
         float fr = (float)(pos & 0xFFFFu) * (1.0f / 65536.0f);
-        float l = (float)(int16_t)a + ((float)(int16_t)b - (float)(int16_t)a) * fr;
-        float rr = (float)(int16_t)(a >> 16) + ((float)(int16_t)(b >> 16) - (float)(int16_t)(a >> 16)) * fr;
-        out[2u * i] += (int32_t)(l * g);
-        out[2u * i + 1u] += (int32_t)(rr * g);
+        for (uint32_t c = 0; c < UO_CHANNELS; c++) {
+            float a = (float)uo_ring[(r + k) & (UO_N - 1u)][c];
+            float b = (float)uo_ring[(r + k + 1u) & (UO_N - 1u)][c];
+            out[UO_CHANNELS * i + c] += (int32_t)((a + (b - a) * fr) * g);
+        }
         pos += step;
     }
     RING_PUBLISH();

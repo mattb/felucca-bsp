@@ -37,5 +37,22 @@ int main(void)
     }
     fwrite(&uac.underruns, sizeof uac.underruns, 1, stdout);
     fwrite(&uac.overruns, sizeof uac.overruns, 1, stdout);
+#if FELUCCA_UAC_OUT
+    /* Compare the original stereo playback interpolation/mixing as well. */
+    memset(&uo, 0, sizeof uo); uo.alt = 1;
+    for (unsigned block = 0; block < 100; block++) {
+        for (unsigned i = 0; i < UO_N; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            memcpy((uint8_t *)uo_ring + 4*i, &seed, 4);
+        }
+        uo_r = UO_N-64; uo_w = uo_r + UO_TGT + block;
+        uo.go = 1; uo.pos = block * 503; uo.err = (float)block;
+        int32_t output[256];
+        for (unsigned i = 0; i < 256; i++) output[i] = (int32_t)i*500-10000;
+        uac_play(output, 128, block * 41);
+        fwrite(output, sizeof output, 1, stdout);
+        uint32_t read_index = uo_r; fwrite(&read_index, sizeof read_index, 1, stdout); fwrite(&uo.pos, sizeof uo.pos, 1, stdout);
+    }
+#endif
     return ferror(stdout) ? 1 : 0;
 }
