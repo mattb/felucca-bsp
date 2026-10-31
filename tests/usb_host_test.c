@@ -78,7 +78,7 @@ static void devices_init(void)
 }
 
 /* --------------------------------------------------- the SIE and bus --- */
-static uint8_t regs[4][32], common[16], index_reg, rsp[512];
+static uint8_t regs[5][32], common[16], index_reg, rsp[512];
 static uint32_t rsp_len, rsp_pos, ep_cnt[5];
 static void *ep_radr[5];
 static void *ep_tadr[5];
@@ -327,9 +327,15 @@ static void fm1_delay_ms(uint32_t ms) { (void)ms; }
 #ifndef TEST_HOST
 #define TEST_HOST 1
 #endif
+#ifndef FELUCCA_UAC_48K
 #define FELUCCA_UAC_48K 0
+#endif
+#ifndef FELUCCA_UAC_OUT
 #define FELUCCA_UAC_OUT TEST_UAC
+#endif
+#ifndef HALF_FRAMES
 #define HALF_FRAMES 128u
+#endif
 static volatile uint32_t render_peak;
 static volatile uint8_t render_busy;
 #include "../chip/usb.c"
