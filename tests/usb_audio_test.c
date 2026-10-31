@@ -84,6 +84,32 @@ static void resampling(void)
         }
     }
 }
+static void full_render_blocks(void)
+{
+    int32_t input[HALF_FRAMES * UA_CHANNELS];
+    reset_capture(1);
+    /* Retain real priming on the first block to exercise capacity admission. */
+    ua_r = 0;
+    uint32_t start = ua_w;
+    for (unsigned i = 0; i < HALF_FRAMES; i++) for (unsigned c = 0; c < UA_CHANNELS; c++)
+        input[i*UA_CHANNELS+c] = (int32_t)(1000*(c+1))*256;
+    for (unsigned block = 0; block < 40; block++) {
+        uint32_t begin = ua_w;
+        uac_tap(input, HALF_FRAMES);
+        assert(!uac.overruns);
+        assert(ua_w-start == ((block+1)*HALF_FRAMES*160u+146u)/147u);
+        for (uint32_t i = begin + (block ? 0u : 50u); i < ua_w; i++)
+            for (unsigned c = 0; c < UA_CHANNELS; c++)
+                assert(ua_ring[i&(UA_N-1)][c] == (int32_t)(1000*(c+1)));
+        ua_r = ua_w;
+    }
+    /* Insufficient capacity drops the entire block without partial publication. */
+    uint32_t before = ua_w;
+    ua_r = ua_w - UA_N;
+    uac_tap(input, HALF_FRAMES);
+    assert(ua_w == before && uac.overruns == 1);
+}
+
 static void resampler_signal(void)
 {
     /* Packet/ring wrap and arbitrary app block boundaries must not change PCM. */
@@ -129,8 +155,8 @@ int main(void)
 {
     descriptors(); interleaving();
 #if FELUCCA_UAC_48K
-    resampling(); resampler_signal();
+    resampling(); resampler_signal(); full_render_blocks();
 #endif
-    printf("USB audio %d channels, 48k=%d: descriptors, names, interleave, underrun, isolation OK\n", UA_CHANNELS, FELUCCA_UAC_48K);
+    printf("USB audio %d channels, 48k=%d, half=%u, deep=%d: descriptors, names, interleave, underrun, isolation OK\n", UA_CHANNELS, FELUCCA_UAC_48K, HALF_FRAMES, FELUCCA_UAC_DEEP);
     return 0;
 }

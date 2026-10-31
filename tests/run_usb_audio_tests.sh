@@ -12,13 +12,18 @@ for channels in 1 2 6; do
       2) names='"Master L","Master R"' ;;
       6) names='"Master L","Master R","Deck A L","Deck A R","Deck B L","Deck B R"' ;;
     esac
-    for rate in 0 1; do
+    for half in 128 256; do
+      for deep in 0 1; do
+       for rate in 0 1; do
         "${CC:-cc}" -std=c11 -O1 -Wall -Wextra -Werror -Wno-unused-function \
             -Wno-unused-variable -Wno-missing-field-initializers \
             -fsanitize=address,undefined -Ichip -DFELUCCA_UAC_CHANNELS=$channels \
+            -DHALF_FRAMES=$half -DFELUCCA_UAC_DEEP=$deep \
             "-DFELUCCA_UAC_CHANNEL_NAMES=$names" -DFELUCCA_UAC_48K=$rate \
             tests/usb_audio_test.c -lm -o "$AUDIO_TEST_DIR/audio"
         "$AUDIO_TEST_DIR/audio"
+       done
+      done
     done
 done
 # Unconfigured legacy stereo remains valid, including its unnamed spatial L/R descriptor.
