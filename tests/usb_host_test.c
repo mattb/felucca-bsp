@@ -330,7 +330,9 @@ static void fm1_delay_ms(uint32_t ms) { (void)ms; }
 #ifndef FELUCCA_UAC_48K
 #define FELUCCA_UAC_48K 0
 #endif
+#ifndef FELUCCA_UAC_OUT
 #define FELUCCA_UAC_OUT TEST_UAC
+#endif
 #define HALF_FRAMES 128u
 static volatile uint32_t render_peak;
 static volatile uint8_t render_busy;
